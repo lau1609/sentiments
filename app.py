@@ -12,8 +12,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-st.title("📊 Unificador y Limpiador de Comentarios para Power BI")
-st.write("Sube todos los archivos Excel que necesites (sin límite). El sistema detectará automáticamente las columnas y los combinará.")
+st.title("Sentimientos en redes sociales")
+st.write("Carga los archivos de excel.")
 
 # Diccionario expandido de palabras clave (en minúsculas y limpias)
 FECHA_KEYWORDS = [
