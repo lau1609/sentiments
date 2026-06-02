@@ -1,20 +1,20 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from dateutil import parser
 import io
 import re
 
 st.set_page_config(
-    page_title="Unificador de Comentarios",
-    page_icon="📊",
+    page_title="Analisis de excel",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-st.title("📊 Unificador y Limpiador de Comentarios para Power BI")
-st.write("Sube todos los archivos Excel que necesites (sin límite). El sistema saltará la basura de Export Comments automáticamente.")
+st.title("Unificador y Limpiador de Comentarios para Power BI")
+st.write("Sube todos los archivos Excel que necesites (sin límite). Soporta múltiples formatos de fecha.")
 
-# Diccionario expandido de palabras clave
 FECHA_KEYWORDS = ['date', 'fecha', 'created', 'time', 'timestamp', 'publicado', 'enviado', 'at']
 TEXTO_KEYWORDS = ['comment', 'comentario', 'text', 'body', 'mensaje', 'review', 'contenido', 'texto']
 
@@ -37,20 +37,31 @@ def detectar_columna(df_columns, keywords):
     return None
 
 def leer_excel_detectando_cabecera(file):
-    """Prueba leer el excel saltando filas hasta encontrar las columnas correctas"""
-    # Intentamos buscar en las primeras 15 filas dónde empieza la tabla real
     for filas_a_saltar in range(0, 15):
-        df_intento = pd.read_excel(file, skiprows=filas_a_saltar)
-        
-        # Validamos si este intento tiene las columnas que buscamos
-        col_fecha = detectar_columna(df_intento.columns, FECHA_KEYWORDS)
-        col_texto = detectar_columna(df_intento.columns, TEXTO_KEYWORDS)
-        
-        if col_fecha and col_texto:
-            # Si encontramos ambas columnas, este es el data frame correcto
-            return df_intento, col_fecha, col_texto
+        try:
+            df_intento = pd.read_excel(file, skiprows=filas_a_saltar)
+            col_fecha = detectar_columna(df_intento.columns, FECHA_KEYWORDS)
+            col_texto =电力detectar_columna(df_intento.columns, TEXTO_KEYWORDS)
             
+            if col_fecha and col_texto:
+                return df_intento, col_fecha, col_texto
+        except Exception:
+            continue
     return None, None, None
+
+def normalizar_fecha_loca(val):
+    """Parsea formatos de fecha mezclados, con/sin hora, diagonales o guiones"""
+    if pd.isna(val) or str(val).strip() == "":
+        return datetime.today().strftime('%Y-%m-%d')
+    
+    try:
+        # El parser de dateutil autodetecta casi cualquier formato string o timestamp
+        # dayfirst=True ayuda si tus archivos priorizan el formato DD/MM/YYYY sobre el americano
+        fecha_parseada = parser.parse(str(val), dayfirst=True)
+        return fecha_parseada.strftime('%Y-%m-%d')
+    except Exception:
+        # Si falla totalmente (ej. un texto corrupto), devolvemos la fecha de hoy para no perder el dato
+        return datetime.today().strftime('%Y-%m-%d')
 
 # Contenedor principal de carga
 st.subheader("1. Cargar Archivos Excel")
@@ -76,16 +87,12 @@ if uploaded_files:
         status_text.text(f"Procesando archivo {idx + 1} de {total_archivos}: {file.name}")
         
         try:
-            # Llamar a la función inteligente que salta la cabecera basura de Export Comments
             df, col_fecha, col_texto = leer_excel_detectando_cabecera(file)
             
             if df is None:
-                # Si de plano falló tras intentar 15 filas, abrimos normal para mostrar el error de auditoría
-                df_error = pd.read_excel(file)
-                st.error(f"⚠️ '{file.name}' omitido. No se detectaron las palabras clave. Columnas analizadas en la primera fila: `{list(df_error.columns[:5])}...`")
+                st.error(f"⚠️ '{file.name}' omitido. No se detectaron las columnas de fecha/texto.")
                 continue
             
-            # Detectar plataforma por nombre de archivo para armar el ID
             nombre_archivo = file.name.lower()
             plataforma = "rrss"
             for p in ["instagram", "ig", "facebook", "fb", "youtube", "yt", "tiktok", "twitter", "linkedin", "tripadvisor"]:
@@ -93,27 +100,29 @@ if uploaded_files:
                     plataforma = "instagram" if p == "ig" else ("youtube" if p == "yt" else ("facebook" if p == "fb" else p))
                     break
             
-            # Estructurar la información de salida de las 4 columnas solicitadas
             df_limpio = pd.DataFrame()
             
             timestamp_id = int(datetime.now().timestamp())
             df_limpio['id'] = [f"{plataforma}_{timestamp_id}_{i+1}" for i in range(len(df))]
             
-            # Estandarizar Fechas uniformemente a YYYY-MM-DD
-            df_limpio['date'] = pd.to_datetime(df[col_fecha], errors='coerce').dt.strftime('%Y-%m-%d')
+            # APLICAR EL PARSER INTELIGENTE CELDA POR CELDA
+            df_limpio['date'] = df[col_fecha].apply(normalizar_fecha_loca)
             
-            # Texto limpio de comentarios
+            # Texto de comentarios
             df_limpio['comment'] = df[col_texto].astype(str).str.strip()
-            
-            # Sentimiento (columna vacía lista para Power BI)
             df_limpio['sentiment'] = ""
             
-            # Limpieza final: quitar nulos o vacíos en el comentario
-            df_limpio.dropna(subset=['date', 'comment'], inplace=True)
+            # Limpieza básica de comentarios vacíos
             df_limpio = df_limpio[df_limpio['comment'] != "nan"]
             df_limpio = df_limpio[df_limpio['comment'] != ""]
+            df_limpio.dropna(subset=['comment'], inplace=True)
             
-            dfs_procesados.append(df_limpio)
+            if not df_limpio.empty:
+                dfs_processed_len = len(df_limpio)
+                dfs_procesados.append(df_limpio)
+                st.success(f"✔️ '{file.name}' procesado con éxito. Se extrajeron {dfs_processed_len} filas.")
+            else:
+                st.warning(f"⚠️ '{file.name}' no aportó comentarios válidos.")
             
         except Exception as e:
             st.error(f"💥 Error crítico al abrir {file.name}: {str(e)}")
