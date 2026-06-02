@@ -6,17 +6,18 @@ import io
 import re
 
 st.set_page_config(
-    page_title="Analisis de excel",
-    page_icon="",
+    page_title="Unificador de Comentarios",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-st.title("Unificador y Limpiador de Comentarios para Power BI")
-st.write("Sube todos los archivos Excel que necesites (sin límite). Soporta múltiples formatos de fecha.")
+st.title("📊 Unificador y Limpiador de Comentarios para Power BI")
+st.write("Sube todos los archivos Excel que necesites (sin límite).")
 
-FECHA_KEYWORDS = ['date', 'fecha', 'created', 'time', 'timestamp', 'publicado', 'enviado', 'at']
-TEXTO_KEYWORDS = ['comment', 'comentario', 'text', 'body', 'mensaje', 'review', 'contenido', 'texto']
+# Palabras clave ultra-expandidas basados en Export Comments y TripAdvisor
+FECHA_KEYWORDS = ['date', 'fecha', 'created', 'time', 'timestamp', 'publicado', 'enviado', 'at', 'published']
+TEXTO_KEYWORDS = ['comment', 'comentario', 'text', 'body', 'mensaje', 'review', 'contenido', 'texto', 'caption']
 
 def limpiar_texto(texto):
     texto = str(texto).lower().strip()
@@ -37,30 +38,26 @@ def detectar_columna(df_columns, keywords):
     return None
 
 def leer_excel_detectando_cabecera(file):
-    for filas_a_saltar in range(0, 15):
+    # Aumentamos el escaneo hasta 30 filas por si Export Comments metió más espacio
+    for filas_a_saltar in range(0, 30):
         try:
             df_intento = pd.read_excel(file, skiprows=filas_a_saltar)
             col_fecha = detectar_columna(df_intento.columns, FECHA_KEYWORDS)
-            col_texto =电力detectar_columna(df_intento.columns, TEXTO_KEYWORDS)
+            col_texto = detectar_columna(df_intento.columns, TEXTO_KEYWORDS)
             
             if col_fecha and col_texto:
-                return df_intento, col_fecha, col_texto
+                return df_intento, col_fecha, col_texto, filas_a_saltar
         except Exception:
             continue
-    return None, None, None
+    return None, None, None, None
 
 def normalizar_fecha_loca(val):
-    """Parsea formatos de fecha mezclados, con/sin hora, diagonales o guiones"""
     if pd.isna(val) or str(val).strip() == "":
         return datetime.today().strftime('%Y-%m-%d')
-    
     try:
-        # El parser de dateutil autodetecta casi cualquier formato string o timestamp
-        # dayfirst=True ayuda si tus archivos priorizan el formato DD/MM/YYYY sobre el americano
         fecha_parseada = parser.parse(str(val), dayfirst=True)
         return fecha_parseada.strftime('%Y-%m-%d')
     except Exception:
-        # Si falla totalmente (ej. un texto corrupto), devolvemos la fecha de hoy para no perder el dato
         return datetime.today().strftime('%Y-%m-%d')
 
 # Contenedor principal de carga
@@ -77,22 +74,24 @@ if uploaded_files:
     st.subheader("2. Procesamiento de Archivos")
     
     dfs_procesados = []
-    progreso_barra = st.progress(0)
-    status_text = st.empty()
     total_archivos = len(uploaded_files)
     
     for idx, file in enumerate(uploaded_files):
-        porcentaje = int((idx + 1) / total_archivos * 100)
-        progreso_barra.progress(porcentaje)
-        status_text.text(f"Procesando archivo {idx + 1} de {total_archivos}: {file.name}")
-        
         try:
-            df, col_fecha, col_texto = leer_excel_detectando_cabecera(file)
+            df, col_fecha, col_texto, fila_inicio = leer_excel_detectando_cabecera(file)
             
             if df is None:
-                st.error(f"⚠️ '{file.name}' omitido. No se detectaron las columnas de fecha/texto.")
+                st.warning(f"⚠️ '{file.name}' omitido. No se detectaron las columnas de fecha/texto de manera automática.")
+                
+                # MODO DIAGNÓSTICO: Leemos las primeras filas sin saltar nada para enseñarte qué hay
+                df_diag = pd.read_excel(file, nrows=10)
+                with st.expander(f"🔍 Ver estructura interna de diagnóstico para: {file.name}"):
+                    st.write("Así se ven las primeras 10 filas de tu archivo tal como las recibe el servidor:")
+                    st.dataframe(df_diag.dropna(how='all').head(10))
+                    st.write("Columnas detectadas en la fila 0 (sin saltar nada):", list(df_diag.columns))
                 continue
             
+            # Identificar plataforma
             nombre_archivo = file.name.lower()
             plataforma = "rrss"
             for p in ["instagram", "ig", "facebook", "fb", "youtube", "yt", "tiktok", "twitter", "linkedin", "tripadvisor"]:
@@ -101,38 +100,30 @@ if uploaded_files:
                     break
             
             df_limpio = pd.DataFrame()
-            
             timestamp_id = int(datetime.now().timestamp())
             df_limpio['id'] = [f"{plataforma}_{timestamp_id}_{i+1}" for i in range(len(df))]
             
-            # APLICAR EL PARSER INTELIGENTE CELDA POR CELDA
+            # Aplicar conversión de fecha inteligente
             df_limpio['date'] = df[col_fecha].apply(normalizar_fecha_loca)
             
             # Texto de comentarios
             df_limpio['comment'] = df[col_texto].astype(str).str.strip()
             df_limpio['sentiment'] = ""
             
-            # Limpieza básica de comentarios vacíos
+            # Limpieza básica
             df_limpio = df_limpio[df_limpio['comment'] != "nan"]
             df_limpio = df_limpio[df_limpio['comment'] != ""]
             df_limpio.dropna(subset=['comment'], inplace=True)
             
             if not df_limpio.empty:
-                dfs_processed_len = len(df_limpio)
                 dfs_procesados.append(df_limpio)
-                st.success(f"✔️ '{file.name}' procesado con éxito. Se extrajeron {dfs_processed_len} filas.")
-            else:
-                st.warning(f"⚠️ '{file.name}' no aportó comentarios válidos.")
+                st.success(f"✔️ '{file.name}' procesado con éxito (Inició en fila {fila_inicio + 1}, {len(df_limpio)} filas).")
             
         except Exception as e:
             st.error(f"💥 Error crítico al abrir {file.name}: {str(e)}")
-            
-    status_text.text("¡Procesamiento completo!")
-    progreso_barra.empty()
 
     if dfs_procesados:
         df_final = pd.concat(dfs_procesados, ignore_index=True)
-        
         st.write("---")
         st.subheader("3. Resultado de la Combinación Unificada")
         
@@ -140,7 +131,6 @@ if uploaded_files:
         col1.metric("Archivos combinados con éxito", len(dfs_procesados))
         col2.metric("Total de registros generados", f"{len(df_final):,}")
         
-        st.write("**Vista previa de tus nuevas 4 columnas estandarizadas:**")
         st.dataframe(df_final.head(10), use_container_width=True)
         
         output = io.BytesIO()
