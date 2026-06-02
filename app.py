@@ -4,7 +4,6 @@ from datetime import datetime
 import io
 import re
 
-# Configuración de página limpia y minimalista
 st.set_page_config(
     page_title="Unificador de Comentarios",
     page_icon="📊",
@@ -12,41 +11,46 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-st.title("Sentimientos en redes sociales")
-st.write("Carga los archivos de excel.")
+st.title("📊 Unificador y Limpiador de Comentarios para Power BI")
+st.write("Sube todos los archivos Excel que necesites (sin límite). El sistema saltará la basura de Export Comments automáticamente.")
 
-# Diccionario expandido de palabras clave (en minúsculas y limpias)
-FECHA_KEYWORDS = [
-    'date', 'fecha', 'created', 'time', 'timestamp', 'publicado', 
-    'enviado', 'at', 'post date', 'comment date'
-]
-TEXTO_KEYWORDS = [
-    'comment', 'comentario', 'text', 'body', 'mensaje', 'review', 
-    'contenido', 'comment text', 'texto', 'caption', 'description'
-]
+# Diccionario expandido de palabras clave
+FECHA_KEYWORDS = ['date', 'fecha', 'created', 'time', 'timestamp', 'publicado', 'enviado', 'at']
+TEXTO_KEYWORDS = ['comment', 'comentario', 'text', 'body', 'mensaje', 'review', 'contenido', 'texto']
 
 def limpiar_texto(texto):
-    """Normaliza el texto para facilitar la búsqueda de coincidencias"""
     texto = str(texto).lower().strip()
-    # Quitar acentos básicos
     texto = re.sub(r'[áäâà]', 'a', texto)
     texto = re.sub(r'[éëêè]', 'e', texto)
     texto = re.sub(r'[íïîì]', 'i', texto)
     texto = re.sub(r'[óöôò]', 'o', texto)
     texto = re.sub(r'[úüûù]', 'u', texto)
-    # Quitar caracteres especiales como guiones bajos o espacios extra
     texto = re.sub(r'[^a-z0-9]', '', texto)
     return texto
 
 def detectar_columna(df_columns, keywords):
-    # Intentar coincidencia exacta o contenida en el texto normalizado
     for col in df_columns:
         col_limpia = limpiar_texto(col)
         for kw in keywords:
-            kw_limpia = limpiar_texto(kw)
-            if kw_limpia in col_limpia:
+            if limpiar_texto(kw) in col_limpia:
                 return col
     return None
+
+def leer_excel_detectando_cabecera(file):
+    """Prueba leer el excel saltando filas hasta encontrar las columnas correctas"""
+    # Intentamos buscar en las primeras 15 filas dónde empieza la tabla real
+    for filas_a_saltar in range(0, 15):
+        df_intento = pd.read_excel(file, skiprows=filas_a_saltar)
+        
+        # Validamos si este intento tiene las columnas que buscamos
+        col_fecha = detectar_columna(df_intento.columns, FECHA_KEYWORDS)
+        col_texto = detectar_columna(df_intento.columns, TEXTO_KEYWORDS)
+        
+        if col_fecha and col_texto:
+            # Si encontramos ambas columnas, este es el data frame correcto
+            return df_intento, col_fecha, col_texto
+            
+    return None, None, None
 
 # Contenedor principal de carga
 st.subheader("1. Cargar Archivos Excel")
@@ -72,26 +76,24 @@ if uploaded_files:
         status_text.text(f"Procesando archivo {idx + 1} de {total_archivos}: {file.name}")
         
         try:
-            df = pd.read_excel(file)
+            # Llamar a la función inteligente que salta la cabecera basura de Export Comments
+            df, col_fecha, col_texto = leer_excel_detectando_cabecera(file)
             
-            # Detectar plataforma por nombre de archivo
+            if df is None:
+                # Si de plano falló tras intentar 15 filas, abrimos normal para mostrar el error de auditoría
+                df_error = pd.read_excel(file)
+                st.error(f"⚠️ '{file.name}' omitido. No se detectaron las palabras clave. Columnas analizadas en la primera fila: `{list(df_error.columns[:5])}...`")
+                continue
+            
+            # Detectar plataforma por nombre de archivo para armar el ID
             nombre_archivo = file.name.lower()
             plataforma = "rrss"
-            for p in ["instagram", "ig", "facebook", "fb", "youtube", "yt", "tiktok", "twitter", "linkedin"]:
+            for p in ["instagram", "ig", "facebook", "fb", "youtube", "yt", "tiktok", "twitter", "linkedin", "tripadvisor"]:
                 if p in nombre_archivo:
                     plataforma = "instagram" if p == "ig" else ("youtube" if p == "yt" else ("facebook" if p == "fb" else p))
                     break
             
-            # Mapeo inteligente con limpieza previa
-            col_fecha = detectar_columna(df.columns, FECHA_KEYWORDS)
-            col_texto = detectar_columna(df.columns, TEXTO_KEYWORDS)
-            
-            # Si falla la detección, te mostramos qué columnas traía el archivo para auditarlo
-            if not col_fecha or not col_texto:
-                st.error(f"⚠️ '{file.name}' omitido. Columnas encontradas: `{list(df.columns)}`. Asegúrate de que tenga campos de fecha y texto.")
-                continue
-            
-            # Estructurar la información de salida obligatoria (Aquí se renombran las columnas)
+            # Estructurar la información de salida de las 4 columnas solicitadas
             df_limpio = pd.DataFrame()
             
             timestamp_id = int(datetime.now().timestamp())
@@ -103,12 +105,13 @@ if uploaded_files:
             # Texto limpio de comentarios
             df_limpio['comment'] = df[col_texto].astype(str).str.strip()
             
-            # Sentimiento (columna vacía solicitada)
+            # Sentimiento (columna vacía lista para Power BI)
             df_limpio['sentiment'] = ""
             
-            # Limpieza básica
+            # Limpieza final: quitar nulos o vacíos en el comentario
             df_limpio.dropna(subset=['date', 'comment'], inplace=True)
             df_limpio = df_limpio[df_limpio['comment'] != "nan"]
+            df_limpio = df_limpio[df_limpio['comment'] != ""]
             
             dfs_procesados.append(df_limpio)
             
@@ -128,7 +131,7 @@ if uploaded_files:
         col1.metric("Archivos combinados con éxito", len(dfs_procesados))
         col2.metric("Total de registros generados", f"{len(df_final):,}")
         
-        st.write("**Vista previa del set de datos final (Tus nuevas 4 columnas estandarizadas):**")
+        st.write("**Vista previa de tus nuevas 4 columnas estandarizadas:**")
         st.dataframe(df_final.head(10), use_container_width=True)
         
         output = io.BytesIO()
